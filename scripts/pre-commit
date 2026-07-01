@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export PATH="/snap/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
 RED='\033[0;31m'
 NC='\033[0m'
 

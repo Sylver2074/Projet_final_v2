@@ -133,18 +133,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Detecter les changements backend
+      - name: Detecter les changements du contexte Docker backend
         id: changes
         uses: dorny/paths-filter@v3
         with:
           filters: |
-            backend:
-              - 'backend/**'
-              - '.github/workflows/ci-cd.yml'
-              - '.github/actions/trivy-scan/action.yml'
+            docker-build-context:
+              - 'backend/Dockerfile'
+              - 'backend/.dockerignore'
+              - 'backend/package.json'
+              - 'backend/package-lock.json'
+              - 'backend/src/**'
+
+      - name: Ignorer le build Docker
+        if: steps.changes.outputs.docker-build-context != 'true'
+        run: |
+          echo "Aucun fichier du contexte Docker backend n'a change : build, scan et publication de l'image ignores."
 
       - name: Calculer les tags image
-        if: steps.changes.outputs.backend == 'true'
+        if: steps.changes.outputs.docker-build-context == 'true'
         id: image
         run: |
           image_repository="$(echo "ghcr.io/${GITHUB_REPOSITORY}/backend" | tr '[:upper:]' '[:lower:]')"
@@ -152,31 +159,31 @@ jobs:
           echo "latest=${image_repository}:latest" >> "$GITHUB_OUTPUT"
 
       - name: Construire l'image locale
-        if: steps.changes.outputs.backend == 'true'
+        if: steps.changes.outputs.docker-build-context == 'true'
         run: docker build --pull --tag "${{ steps.image.outputs.ref }}" backend
 
       - name: Installer Trivy
-        if: steps.changes.outputs.backend == 'true'
+        if: steps.changes.outputs.docker-build-context == 'true'
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh -o /tmp/install-trivy.sh
           sudo sh /tmp/install-trivy.sh -b /usr/local/bin
 
       - name: Scanner l'image locale
-        if: steps.changes.outputs.backend == 'true'
+        if: steps.changes.outputs.docker-build-context == 'true'
         run: trivy image --severity HIGH,CRITICAL --exit-code 1 --no-progress "${{ steps.image.outputs.ref }}"
 
       - name: Generer le SBOM CycloneDX
-        if: steps.changes.outputs.backend == 'true'
+        if: steps.changes.outputs.docker-build-context == 'true'
         run: trivy image --format cyclonedx --output backend-sbom.cdx.json "${{ steps.image.outputs.ref }}"
 
       - name: Scanner le SBOM via l'action composite
-        if: steps.changes.outputs.backend == 'true'
+        if: steps.changes.outputs.docker-build-context == 'true'
         uses: ./.github/actions/trivy-scan
         with:
           sbom-path: backend-sbom.cdx.json
 
       - name: Authentification GHCR
-        if: github.ref == 'refs/heads/main' && steps.changes.outputs.backend == 'true'
+        if: github.ref == 'refs/heads/main' && steps.changes.outputs.docker-build-context == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -184,7 +191,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publier l'image sur GHCR
-        if: github.ref == 'refs/heads/main' && steps.changes.outputs.backend == 'true'
+        if: github.ref == 'refs/heads/main' && steps.changes.outputs.docker-build-context == 'true'
         run: |
           docker tag "${{ steps.image.outputs.ref }}" "${{ steps.image.outputs.latest }}"
           docker push "${{ steps.image.outputs.ref }}"

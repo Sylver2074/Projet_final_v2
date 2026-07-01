@@ -1,0 +1,4 @@
+creation_rules:
+  - path_regex: ^\.github/secrets-prod\.yaml$
+    encrypted_regex: '^(DATABASE_URL|JWT_SECRET|VERCEL_TOKEN|VERCEL_PROJECT_ID|VERCEL_ORG_ID)$'
+    age: age1replacewithyourpublicrecipient0000000000000000000000000000000000000

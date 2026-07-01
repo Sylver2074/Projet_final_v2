@@ -1,0 +1,34 @@
+name: "Trivy SBOM Scan"
+description: "Analyse un SBOM CycloneDX avec Trivy et bloque uniquement les vulnerabilites CRITICAL."
+
+inputs:
+  sbom-path:
+    description: "Chemin du SBOM CycloneDX JSON a analyser."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Verifier la presence de Trivy
+      shell: bash
+      run: |
+        if ! command -v trivy >/dev/null 2>&1; then
+          echo "Le binaire trivy doit etre installe avant l'appel de cette action." >&2
+          exit 1
+        fi
+
+    - name: Publier les avertissements HIGH et MEDIUM
+      shell: bash
+      run: |
+        {
+          echo "### Trivy SBOM - vulnerabilites non bloquantes"
+          echo
+          echo '```text'
+          trivy sbom --severity HIGH,MEDIUM --exit-code 0 --no-progress "${{ inputs.sbom-path }}"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Bloquer les vulnerabilites CRITICAL
+      shell: bash
+      run: |
+        trivy sbom --severity CRITICAL --exit-code 1 --no-progress "${{ inputs.sbom-path }}"

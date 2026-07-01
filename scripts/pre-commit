@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+RED='\033[0;31m'
+NC='\033[0m'
+
+if git diff --cached --name-only --diff-filter=ACMR | grep -E '(\.env|\.pem|\.key)$' >/dev/null; then
+  printf "${RED}Sécurité : Tentative de commit d'un fichier de configuration ou d'une clé en clair. Opération annulée.${NC}\n" >&2
+  exit 1
+fi
+
+if ! command -v actionlint >/dev/null 2>&1; then
+  printf "${RED}actionlint est requis par le hook pre-commit.${NC}\n" >&2
+  exit 1
+fi
+
+if [ -d .github/workflows ]; then
+  workflow_files="$(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print)"
+  if [ -n "$workflow_files" ]; then
+    # shellcheck disable=SC2086
+    actionlint $workflow_files
+  fi
+fi
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  printf "${RED}gitleaks est requis par le hook pre-commit.${NC}\n" >&2
+  exit 1
+fi
+
+gitleaks protect --staged --redact --config gitleaks.toml --verbose

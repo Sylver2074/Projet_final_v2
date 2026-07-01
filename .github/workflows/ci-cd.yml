@@ -1,0 +1,278 @@
+name: CI/CD DevSecOps
+
+on:
+  push:
+    branches:
+      - staging
+      - main
+  pull_request:
+    branches:
+      - staging
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  branch-governance:
+    name: Gouvernance des branches
+    runs-on: ubuntu-latest
+    steps:
+      - name: Strategie de promotion
+        run: |
+          echo "staging: branche d'integration, CI complete obligatoire."
+          echo "main: branche de production, deploiement conditionne par tous les jobs de validation."
+          echo "Les push directs sur main doivent etre interdits via les Branch protection rules GitHub."
+
+  backend-tests:
+    name: Tests backend
+    runs-on: ubuntu-latest
+    needs: branch-governance
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATABASE_URL: postgresql://ci-user:ci-password@localhost:5432/securewallet
+      JWT_SECRET: ci-jwt-secret
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Installer les dependances
+        run: npm ci
+
+      - name: Executer les tests
+        run: npm test
+
+  gitleaks:
+    name: Scan secrets Gitleaks
+    runs-on: ubuntu-latest
+    needs: branch-governance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detecter les secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: gitleaks.toml
+          GITLEAKS_ENABLE_COMMENTS: "false"
+        with:
+          args: detect --source . --config gitleaks.toml --redact --exit-code 1
+
+  codeql:
+    name: Analyse CodeQL
+    runs-on: ubuntu-latest
+    needs: branch-governance
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialiser CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-extended,security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Analyser et televerser le SARIF
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:javascript-typescript"
+          output: codeql-results
+
+      - name: Bloquer les alertes High ou Error
+        run: |
+          sarif_file="$(find codeql-results -name '*.sarif' -print -quit)"
+          if [ -z "$sarif_file" ]; then
+            echo "Aucun rapport SARIF CodeQL trouve." >&2
+            exit 1
+          fi
+
+          jq -e '
+            [
+              .runs[].results[]?
+              | select(
+                  .level == "error"
+                  or ((.properties["security-severity"]? // "0" | tonumber) >= 7.0)
+                )
+            ]
+            | length == 0
+          ' "$sarif_file" >/dev/null
+
+  docker-image:
+    name: Build, scan et publication Docker
+    runs-on: ubuntu-latest
+    needs:
+      - backend-tests
+      - gitleaks
+      - codeql
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detecter les changements backend
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - '.github/workflows/ci-cd.yml'
+              - '.github/actions/trivy-scan/action.yml'
+
+      - name: Calculer les tags image
+        if: steps.changes.outputs.backend == 'true'
+        id: image
+        run: |
+          image_repository="$(echo "ghcr.io/${GITHUB_REPOSITORY}/backend" | tr '[:upper:]' '[:lower:]')"
+          echo "ref=${image_repository}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "latest=${image_repository}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Construire l'image locale
+        if: steps.changes.outputs.backend == 'true'
+        run: docker build --pull --tag "${{ steps.image.outputs.ref }}" backend
+
+      - name: Installer Trivy
+        if: steps.changes.outputs.backend == 'true'
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh -o /tmp/install-trivy.sh
+          sudo sh /tmp/install-trivy.sh -b /usr/local/bin
+
+      - name: Scanner l'image locale
+        if: steps.changes.outputs.backend == 'true'
+        run: trivy image --severity HIGH,CRITICAL --exit-code 1 --no-progress "${{ steps.image.outputs.ref }}"
+
+      - name: Generer le SBOM CycloneDX
+        if: steps.changes.outputs.backend == 'true'
+        run: trivy image --format cyclonedx --output backend-sbom.cdx.json "${{ steps.image.outputs.ref }}"
+
+      - name: Scanner le SBOM via l'action composite
+        if: steps.changes.outputs.backend == 'true'
+        uses: ./.github/actions/trivy-scan
+        with:
+          sbom-path: backend-sbom.cdx.json
+
+      - name: Authentification GHCR
+        if: github.ref == 'refs/heads/main' && steps.changes.outputs.backend == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publier l'image sur GHCR
+        if: github.ref == 'refs/heads/main' && steps.changes.outputs.backend == 'true'
+        run: |
+          docker tag "${{ steps.image.outputs.ref }}" "${{ steps.image.outputs.latest }}"
+          docker push "${{ steps.image.outputs.ref }}"
+          docker push "${{ steps.image.outputs.latest }}"
+
+  deploy-frontend:
+    name: CD frontend GitHub Pages
+    runs-on: ubuntu-latest
+    needs:
+      - backend-tests
+      - gitleaks
+      - codeql
+    if: github.ref == 'refs/heads/main' && needs.backend-tests.result == 'success' && needs.gitleaks.result == 'success' && needs.codeql.result == 'success'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurer GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Packager le frontend
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend
+
+      - name: Deployer GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  deploy-backend:
+    name: CD backend Vercel
+    runs-on: ubuntu-latest
+    needs:
+      - backend-tests
+      - gitleaks
+      - codeql
+      - docker-image
+    if: github.ref == 'refs/heads/main' && needs.backend-tests.result == 'success' && needs.gitleaks.result == 'success' && needs.codeql.result == 'success' && needs.docker-image.result == 'success'
+    permissions:
+      contents: read
+    environment:
+      name: production
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Installer Vercel CLI et SOPS
+        run: |
+          npm install --global vercel
+          SOPS_VERSION="3.9.0"
+          curl -L "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64" -o /tmp/sops
+          sudo install -m 0755 /tmp/sops /usr/local/bin/sops
+
+      - name: Dechiffrer les secrets en memoire et deployer
+        id: deploy
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          set -euo pipefail
+
+          secrets_json="$(sops --decrypt --input-type yaml --output-type json ../.github/secrets-prod.yaml)"
+
+          DATABASE_URL="$(jq -r '.production.DATABASE_URL' <<< "$secrets_json")"
+          JWT_SECRET="$(jq -r '.production.JWT_SECRET' <<< "$secrets_json")"
+          VERCEL_TOKEN="$(jq -r '.production.VERCEL_TOKEN' <<< "$secrets_json")"
+          VERCEL_ORG_ID="$(jq -r '.production.VERCEL_ORG_ID' <<< "$secrets_json")"
+          VERCEL_PROJECT_ID="$(jq -r '.production.VERCEL_PROJECT_ID' <<< "$secrets_json")"
+          export DATABASE_URL JWT_SECRET VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID
+
+          vercel pull --yes --environment=production --token "$VERCEL_TOKEN"
+          deployment_url="$(vercel deploy --prod --yes --token "$VERCEL_TOKEN" \
+            --env DATABASE_URL="$DATABASE_URL" \
+            --env JWT_SECRET="$JWT_SECRET")"
+          deployment_url="$(printf '%s\n' "$deployment_url" | tail -n 1)"
+          echo "url=$deployment_url" >> "$GITHUB_OUTPUT"
+
+      - name: Healthcheck post-deploiement
+        run: |
+          health_url="${{ steps.deploy.outputs.url }}"
+          health_url="${health_url%/}/api/health"
+          curl --fail --silent --show-error "$health_url"

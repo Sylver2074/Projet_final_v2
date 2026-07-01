@@ -1,0 +1,21 @@
+{
+  "name": "securewallet-backend",
+  "version": "1.0.0",
+  "description": "API Express durcie pour le TP DevSecOps",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "test": "jest --runInBand",
+    "test:unit": "jest tests/unit.test.js --runInBand",
+    "test:integration": "jest tests/integration.test.js --runInBand",
+    "test:e2e": "jest tests/e2e.test.js --runInBand"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0"
+  }
+}

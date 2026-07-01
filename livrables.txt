@@ -1,0 +1,8 @@
+URL du depot GitHub public :
+URL GitHub Pages :
+URL Vercel backend :
+
+Notes :
+- Source GitHub Pages : GitHub Actions.
+- Branche d'integration : staging.
+- Branche de production : main.

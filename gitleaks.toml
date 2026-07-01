@@ -1,0 +1,9 @@
+title = "SecureWallet custom gitleaks rules"
+
+[[rules]]
+id = "securewallet-internal-token"
+description = "Detecte les jetons internes SecureWallet"
+regex = '''SECWALLET_[A-Z0-9]{24}'''
+secretGroup = 0
+entropy = 3.5
+keywords = ["SECWALLET_"]

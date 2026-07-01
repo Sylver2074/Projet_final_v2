@@ -148,7 +148,7 @@ jobs:
 
       - name: Detecter les changements du contexte Docker backend
         id: changes
-        uses: dorny/paths-filter@v5
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             docker-build-context:

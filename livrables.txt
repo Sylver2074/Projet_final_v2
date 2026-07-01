@@ -1,6 +1,6 @@
-URL du depot GitHub public :
-URL GitHub Pages :
-URL Vercel backend :
+URL du depot GitHub public : https://github.com/Sylver2074/Projet_final_v2
+URL GitHub Pages : https://sylver2074.github.io/Projet_final_v2/
+URL Vercel backend : https://projet-final-v2.vercel.app
 
 Notes :
 - Source GitHub Pages : GitHub Actions.

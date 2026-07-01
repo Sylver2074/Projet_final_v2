@@ -23,8 +23,8 @@
         <p>Ce frontend statique est configuré pour interagir avec votre API Node.js distante.</p>
         
         <label for="backendUrl"><strong>URL de l'API Backend (Vercel) :</strong></label><br>
-        <input type="text" id="backendUrl" placeholder="https://votre-api.vercel.app" oninput="saveUrl()">
-        <p style="font-size: 12px; color: #666;">Exemple : <em>https://securewallet-backend.vercel.app</em> (L'URL est sauvegardée localement dans votre navigateur).</p>
+        <input type="text" id="backendUrl" placeholder="https://projet-final-v2.vercel.app" oninput="saveUrl()">
+        <p style="font-size: 12px; color: #666;">API de production : <em>https://projet-final-v2.vercel.app</em> (L'URL est sauvegardée localement dans votre navigateur).</p>
     </div>
 
     <div class="card">
@@ -52,7 +52,8 @@
     </div>
 
     <script>
-        document.getElementById('backendUrl').value = localStorage.getItem('s_backend_url') || '';
+        const DEFAULT_BACKEND_URL = 'https://projet-final-v2.vercel.app';
+        document.getElementById('backendUrl').value = localStorage.getItem('s_backend_url') || DEFAULT_BACKEND_URL;
 
         function saveUrl() {
             localStorage.setItem('s_backend_url', document.getElementById('backendUrl').value);

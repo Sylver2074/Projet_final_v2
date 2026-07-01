@@ -109,11 +109,24 @@ jobs:
           fi
 
           jq -e '
+            def security_severity($rules; $result):
+              if ($result.ruleIndex? != null) then
+                ($rules[$result.ruleIndex].properties["security-severity"]? // "0")
+              else
+                (
+                  $rules[]
+                  | select(.id == $result.ruleId)
+                  | .properties["security-severity"]? // "0"
+                )
+              end;
+
             [
-              .runs[].results[]?
+              .runs[] as $run
+              | ($run.tool.driver.rules // []) as $rules
+              | $run.results[]?
               | select(
                   .level == "error"
-                  or ((.properties["security-severity"]? // "0" | tonumber) >= 7.0)
+                  or ((security_severity($rules; .) | tonumber) >= 7.0)
                 )
             ]
             | length == 0
@@ -131,11 +144,11 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Detecter les changements du contexte Docker backend
         id: changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v5
         with:
           filters: |
             docker-build-context:
@@ -204,7 +217,8 @@ jobs:
       - backend-tests
       - gitleaks
       - codeql
-    if: github.ref == 'refs/heads/main' && needs.backend-tests.result == 'success' && needs.gitleaks.result == 'success' && needs.codeql.result == 'success'
+      - docker-image
+    if: github.ref == 'refs/heads/main' && needs.backend-tests.result == 'success' && needs.gitleaks.result == 'success' && needs.codeql.result == 'success' && needs.docker-image.result == 'success'
     permissions:
       contents: read
       pages: write
@@ -214,19 +228,19 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configurer GitHub Pages
         uses: actions/configure-pages@v5
 
       - name: Packager le frontend
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: frontend
 
       - name: Deployer GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
   deploy-backend:
     name: CD backend Vercel
@@ -246,7 +260,7 @@ jobs:
         working-directory: backend
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Installer Vercel CLI et SOPS
         run: |
@@ -269,17 +283,39 @@ jobs:
           VERCEL_TOKEN="$(jq -r '.production.VERCEL_TOKEN' <<< "$secrets_json")"
           VERCEL_ORG_ID="$(jq -r '.production.VERCEL_ORG_ID' <<< "$secrets_json")"
           VERCEL_PROJECT_ID="$(jq -r '.production.VERCEL_PROJECT_ID' <<< "$secrets_json")"
-          export DATABASE_URL JWT_SECRET VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID
 
-          vercel pull --yes --environment=production --token "$VERCEL_TOKEN"
-          deployment_url="$(vercel deploy --prod --yes --token "$VERCEL_TOKEN" \
+          deployment_output="$(VERCEL_ORG_ID="$VERCEL_ORG_ID" VERCEL_PROJECT_ID="$VERCEL_PROJECT_ID" \
+            vercel deploy --prod --yes --token "$VERCEL_TOKEN" \
             --env DATABASE_URL="$DATABASE_URL" \
-            --env JWT_SECRET="$JWT_SECRET")"
-          deployment_url="$(printf '%s\n' "$deployment_url" | tail -n 1)"
+            --env JWT_SECRET="$JWT_SECRET" 2>&1)"
+          printf '%s\n' "$deployment_output"
+
+          clean_deployment_output="$(printf '%s\n' "$deployment_output" | sed -E 's/\x1B\[[0-9;?]*[ -/]*[@-~]//g')"
+          deployment_url="$(printf '%s\n' "$clean_deployment_output" | awk '/Aliased/ { print $NF }' | tail -n 1)"
+
+          if [ -z "$deployment_url" ]; then
+            deployment_url="$(printf '%s\n' "$clean_deployment_output" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^https:\/\/.*\.vercel\.app$/) print $i }' | tail -n 1)"
+          fi
+
+          if [ -z "$deployment_url" ]; then
+            echo "Impossible de recuperer l'URL Vercel de production depuis la sortie du deploiement." >&2
+            exit 1
+          fi
+
           echo "url=$deployment_url" >> "$GITHUB_OUTPUT"
 
       - name: Healthcheck post-deploiement
         run: |
+          set -euo pipefail
+
           health_url="${{ steps.deploy.outputs.url }}"
           health_url="${health_url%/}/api/health"
-          curl --fail --silent --show-error "$health_url"
+          status_code="$(curl --silent --show-error --location --output /tmp/healthcheck-response.json --write-out "%{http_code}" "$health_url")"
+
+          if [ "$status_code" != "200" ]; then
+            echo "Healthcheck Vercel en echec: ${health_url} a retourne HTTP ${status_code}." >&2
+            cat /tmp/healthcheck-response.json >&2
+            exit 1
+          fi
+
+          cat /tmp/healthcheck-response.json
